@@ -738,20 +738,32 @@ class JudgeSimulator:
         print_section("CONTEXT PUSH")
         for slug, cat in self.dataset.categories.items():
             data, err, _ = self.client.push_context("category", slug, 1, cat)
-            status = "PASS" if data and data.get("accepted") else "FAIL"
-            print(f"  [{status}] category/{slug}")
+            if data and data.get("accepted"):
+                print(f"  [PASS] category/{slug}")
+            elif data and data.get("reason") == "stale_version":
+                print(f"  [STALE] category/{slug} (409 stale_version: v1 <= v{data.get('current_version')})")
+            else:
+                print(f"  [FAIL] category/{slug} ({err or (data.get('reason') if data else 'Unknown')})")
 
         for mid, m in list(self.dataset.merchants.items())[:5]:
             data, err, _ = self.client.push_context("merchant", mid, 1, m)
-            status = "PASS" if data and data.get("accepted") else "FAIL"
             short_id = mid.split('_')[1] if '_' in mid else mid[:10]
-            print(f"  [{status}] merchant/{short_id}")
+            if data and data.get("accepted"):
+                print(f"  [PASS] merchant/{short_id}")
+            elif data and data.get("reason") == "stale_version":
+                print(f"  [STALE] merchant/{short_id} (409 stale_version: v1 <= v{data.get('current_version')})")
+            else:
+                print(f"  [FAIL] merchant/{short_id} ({err or (data.get('reason') if data else 'Unknown')})")
 
         for cid, c in list(self.dataset.customers.items())[:5]:
             data, err, _ = self.client.push_context("customer", cid, 1, c)
-            status = "PASS" if data and data.get("accepted") else "FAIL"
             short_id = cid.split('_')[1] if '_' in cid else cid[:10]
-            print(f"  [{status}] customer/{short_id}")
+            if data and data.get("accepted"):
+                print(f"  [PASS] customer/{short_id}")
+            elif data and data.get("reason") == "stale_version":
+                print(f"  [STALE] customer/{short_id} (409 stale_version: v1 <= v{data.get('current_version')})")
+            else:
+                print(f"  [FAIL] customer/{short_id} ({err or (data.get('reason') if data else 'Unknown')})")
 
         return True
 
