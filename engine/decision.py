@@ -86,9 +86,7 @@ class DecisionEngine:
             cat_slug = merchant.get("category_slug")
             if not cat_slug:
                 continue
-            category = store.get_payload("category", cat_slug)
-            if not category:
-                continue
+            category = store.get_payload("category", cat_slug) or {"slug": cat_slug}
 
             # 4. Customer Context Check (for customer-scoped triggers)
             cid = trg.get("customer_id")
@@ -99,11 +97,18 @@ class DecisionEngine:
                 customer = store.get_payload("customer", cid)
                 if not customer:
                     continue
-                # Check customer consent & lapse state
-                if customer.get("state") == "churned":
+                # Verify customer belongs to this merchant
+                c_mid = customer.get("merchant_id")
+                if c_mid and c_mid != mid:
+                    continue
+                # Check customer state & preferences
+                if customer.get("state") in ("churned", "lapsed_hard", "opted_out"):
                     continue
                 prefs = customer.get("preferences", {})
                 if prefs.get("reminder_opt_in") is False:
+                    continue
+                consent = customer.get("consent", {})
+                if consent.get("opted_in") is False:
                     continue
 
             # 5. Opt-Out & Suppression Checks

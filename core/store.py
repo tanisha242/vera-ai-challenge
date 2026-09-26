@@ -31,7 +31,13 @@ class ContextStore:
         if scope not in VALID_SCOPES:
             return False, "invalid_scope", None
 
-        key = (scope, context_id)
+        if not context_id or not str(context_id).strip():
+            return False, "invalid_context_id", None
+
+        if version is None or version < 1:
+            return False, "invalid_version", None
+
+        key = (scope, str(context_id).strip())
 
         with self._lock:
             cur = self._store.get(key)

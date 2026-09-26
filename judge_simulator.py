@@ -68,9 +68,23 @@ from pathlib import Path
 from urllib import request as urlrequest, error as urlerror
 from abc import ABC, abstractmethod
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Constants
 TIMEOUT_LLM = 45
-DATASET_DIR = Path(__file__).parent / "dataset"
+dataset_env = os.getenv("DATASET_DIR")
+if dataset_env:
+    DATASET_DIR = Path(dataset_env)
+elif (Path(__file__).parent / "dataset_expanded").exists():
+    DATASET_DIR = Path(__file__).parent / "dataset_expanded"
+else:
+    DATASET_DIR = Path(__file__).parent / "dataset"
+
 
 # =============================================================================
 # TERMINAL OUTPUT
@@ -115,7 +129,10 @@ def print_score_bar(dimension: str, score: int, max_score: int = 10):
     bar_filled = int((score / max_score) * 20)
     bar_empty = 20 - bar_filled
     color = Colors.GREEN if score >= 7 else Colors.YELLOW if score >= 4 else Colors.RED
-    print(f"  {dimension:22} [{color}{'█' * bar_filled}{Colors.DIM}{'░' * bar_empty}{Colors.RESET}] {color}{score:2}/{max_score}{Colors.RESET}")
+    try:
+        print(f"  {dimension:22} [{color}{'█' * bar_filled}{Colors.DIM}{'░' * bar_empty}{Colors.RESET}] {color}{score:2}/{max_score}{Colors.RESET}")
+    except UnicodeEncodeError:
+        print(f"  {dimension:22} [{color}{'#' * bar_filled}{Colors.DIM}{'-' * bar_empty}{Colors.RESET}] {color}{score:2}/{max_score}{Colors.RESET}")
 
 def print_reason(text: str):
     wrapped = text[:200] + "..." if len(text) > 200 else text
@@ -382,25 +399,75 @@ class DatasetLoader:
 
     def load(self) -> bool:
         try:
+            # 1. Categories
             cat_dir = self.dataset_dir / "categories"
             if cat_dir.exists():
                 for f in cat_dir.glob("*.json"):
-                    data = json.load(open(f))
-                    self.categories[data.get("slug", f.stem)] = data
+                    with open(f, encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    slug = data.get("slug") or data.get("id") or f.stem
+                    self.categories[slug] = data
 
-            for name, container, key in [
-                ("merchants_seed.json", "merchants", "merchant_id"),
-                ("customers_seed.json", "customers", "customer_id"),
-                ("triggers_seed.json", "triggers", "id")
-            ]:
-                path = self.dataset_dir / name
+            # 2. Merchants
+            merch_dir = self.dataset_dir / "merchants"
+            if merch_dir.exists() and any(merch_dir.glob("*.json")):
+                for f in merch_dir.glob("*.json"):
+                    with open(f, encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    mid = data.get("merchant_id") or data.get("id") or f.stem
+                    self.merchants[mid] = data
+            else:
+                path = self.dataset_dir / "merchants_seed.json"
                 if path.exists():
-                    data = json.load(open(path))
-                    items = data.get(container, data.get(container.rstrip("s"), []))
-                    storage = getattr(self, container)
+                    with open(path, encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    items = data.get("merchants", data.get("merchant", []))
                     for item in items:
-                        if key in item:
-                            storage[item[key]] = item
+                        if "merchant_id" in item:
+                            self.merchants[item["merchant_id"]] = item
+                        elif "id" in item:
+                            self.merchants[item["id"]] = item
+
+            # 3. Customers
+            cust_dir = self.dataset_dir / "customers"
+            if cust_dir.exists() and any(cust_dir.glob("*.json")):
+                for f in cust_dir.glob("*.json"):
+                    with open(f, encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    cid = data.get("customer_id") or data.get("id") or f.stem
+                    self.customers[cid] = data
+            else:
+                path = self.dataset_dir / "customers_seed.json"
+                if path.exists():
+                    with open(path, encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    items = data.get("customers", data.get("customer", []))
+                    for item in items:
+                        if "customer_id" in item:
+                            self.customers[item["customer_id"]] = item
+                        elif "id" in item:
+                            self.customers[item["id"]] = item
+
+            # 4. Triggers
+            trig_dir = self.dataset_dir / "triggers"
+            if trig_dir.exists() and any(trig_dir.glob("*.json")):
+                for f in trig_dir.glob("*.json"):
+                    with open(f, encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    tid = data.get("id") or data.get("trigger_id") or f.stem
+                    self.triggers[tid] = data
+            else:
+                path = self.dataset_dir / "triggers_seed.json"
+                if path.exists():
+                    with open(path, encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    items = data.get("triggers", data.get("trigger", []))
+                    for item in items:
+                        if "id" in item:
+                            self.triggers[item["id"]] = item
+                        elif "trigger_id" in item:
+                            self.triggers[item["trigger_id"]] = item
+
             return True
         except Exception as e:
             print_fail(f"Dataset load error: {e}")
@@ -629,6 +696,7 @@ class JudgeSimulator:
         self.scorer = LLMScorer(self.llm, self.dataset)
         print_info(f"Loaded: {len(self.dataset.categories)} categories, "
                    f"{len(self.dataset.merchants)} merchants, "
+                   f"{len(self.dataset.customers)} customers, "
                    f"{len(self.dataset.triggers)} triggers")
 
         scenarios = {
@@ -679,6 +747,12 @@ class JudgeSimulator:
             short_id = mid.split('_')[1] if '_' in mid else mid[:10]
             print(f"  [{status}] merchant/{short_id}")
 
+        for cid, c in list(self.dataset.customers.items())[:5]:
+            data, err, _ = self.client.push_context("customer", cid, 1, c)
+            status = "PASS" if data and data.get("accepted") else "FAIL"
+            short_id = cid.split('_')[1] if '_' in cid else cid[:10]
+            print(f"  [{status}] customer/{short_id}")
+
         return True
 
     def _phase2_short(self) -> bool:
@@ -689,7 +763,14 @@ class JudgeSimulator:
 
         trigs = list(self.dataset.triggers.keys())[:3]
         for tid in trigs:
-            self.client.push_context("trigger", tid, 1, self.dataset.triggers[tid])
+            t = self.dataset.triggers[tid]
+            mid = t.get("merchant_id")
+            if mid and mid in self.dataset.merchants:
+                self.client.push_context("merchant", mid, 1, self.dataset.merchants[mid])
+            cid = t.get("customer_id")
+            if cid and cid in self.dataset.customers:
+                self.client.push_context("customer", cid, 1, self.dataset.customers[cid])
+            self.client.push_context("trigger", tid, 1, t)
 
         data, err, lat = self.client.tick(trigs)
         if err:
@@ -836,6 +917,8 @@ class JudgeSimulator:
 
         for mid, m in self.dataset.merchants.items():
             self.client.push_context("merchant", mid, 1, m)
+        for cid, c in self.dataset.customers.items():
+            self.client.push_context("customer", cid, 1, c)
         for tid, t in self.dataset.triggers.items():
             self.client.push_context("trigger", tid, 1, t)
 

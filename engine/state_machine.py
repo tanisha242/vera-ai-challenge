@@ -125,6 +125,25 @@ class ConversationStateMachine:
 
         msg_lower = message.lower().strip()
 
+        # Fetch stored merchant and customer context if available
+        m_id = merchant_id or conv.merchant_id
+        c_id = customer_id or conv.customer_id
+
+        merchant = store.get_payload("merchant", m_id) if m_id else None
+        customer = store.get_payload("customer", c_id) if c_id else None
+
+        owner_name = None
+        biz_name = None
+        if merchant:
+            identity = merchant.get("identity", {})
+            owner_name = identity.get("owner_first_name")
+            biz_name = identity.get("name")
+
+        cust_name = None
+        if customer:
+            c_identity = customer.get("identity", {})
+            cust_name = c_identity.get("name")
+
         # 1. Check Canned Auto-Reply Pattern
         is_canned = any(re.search(pat, msg_lower) for pat in CANNED_AUTO_REPLY_PATTERNS)
         if not is_canned and len(conv.history) >= 2:
@@ -145,9 +164,14 @@ class ConversationStateMachine:
             if canned_count == 1:
                 conv.state = "pitch"
                 conv.last_action = "send"
+                body_msg = (
+                    f"Looks like an automated reply. When Dr. {owner_name} is available, please reply 'Yes' for details."
+                    if owner_name
+                    else "Looks like an auto-reply. When the owner sees this, just reply 'Yes' for the details."
+                )
                 return {
                     "action": "send",
-                    "body": "Looks like an auto-reply. When the owner sees this, just reply 'Yes' for the details.",
+                    "body": body_msg,
                     "cta": "binary_yes_no",
                     "rationale": "Detected merchant auto-reply once; sent explicit prompt for owner review.",
                 }
@@ -189,9 +213,14 @@ class ConversationStateMachine:
         is_off_topic = any(re.search(pat, msg_lower) for pat in OFF_TOPIC_PATTERNS)
         if is_off_topic:
             conv.last_action = "send"
+            body_msg = (
+                f"I'll have to leave GST/tax questions to your CA — that's outside what Vera handles. Returning to our discussion for {biz_name} — want me to proceed with the draft?"
+                if biz_name
+                else "I'll have to leave GST filing to your CA — that's outside what I can help with directly. Coming back to our discussion — want me to proceed with the draft?"
+            )
             return {
                 "action": "send",
-                "body": "I'll have to leave GST filing to your CA — that's outside what I can help with directly. Coming back to our discussion — want me to proceed with the draft?",
+                "body": body_msg,
                 "cta": "open_ended",
                 "rationale": "Out-of-scope ask politely declined; redirected back to core trigger thread without losing context.",
             }
@@ -201,9 +230,15 @@ class ConversationStateMachine:
         if is_affirmative or conv.state == "action_execution":
             conv.state = "action_execution"
             conv.last_action = "send"
+            if owner_name and biz_name:
+                body_msg = f"Got it, Dr. {owner_name}! Draft for {biz_name} is prepared for review — reply CONFIRM to publish."
+            elif biz_name:
+                body_msg = f"Sending the details now for {biz_name}. Draft prepared for review — reply CONFIRM to publish."
+            else:
+                body_msg = "Sending the details now. Draft prepared for review — reply CONFIRM to publish."
             return {
                 "action": "send",
-                "body": "Sending the details now. Draft prepared for review — reply CONFIRM to publish.",
+                "body": body_msg,
                 "cta": "binary_confirm_cancel",
                 "rationale": "Honoring merchant commitment; proceeding directly to action execution without re-qualifying.",
             }
@@ -220,9 +255,15 @@ class ConversationStateMachine:
 
         # 6. Default engaged response fallback
         conv.last_action = "send"
+        if cust_name:
+            body_msg = f"Got it! Next step prepared for {cust_name}. Want me to proceed?"
+        elif biz_name:
+            body_msg = f"Got it! Here is the next step for {biz_name}. Want me to proceed?"
+        else:
+            body_msg = "Got it! Here is the next step for your review. Want me to proceed?"
         return {
             "action": "send",
-            "body": "Got it! Here is the next step for your review. Want me to proceed?",
+            "body": body_msg,
             "cta": "open_ended",
             "rationale": "Acknowledged incoming turn; advancing conversation towards resolution.",
         }
